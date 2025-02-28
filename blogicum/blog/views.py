@@ -1,5 +1,5 @@
 from django.shortcuts import get_object_or_404, render
-from django.urls import reverse, reverse_lazy
+from django.urls import reverse
 from django.utils import timezone
 from .models import Category, Post, Comment
 from django.views.generic import DetailView, UpdateView
@@ -8,8 +8,8 @@ from django.shortcuts import render, redirect
 from django.contrib.auth.decorators import login_required
 from .forms import CommentForm, CommentUpdateForm, ProfileEditForm, PostForm
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.contrib import messages
 from django.db.models import Count
+from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 
 
 class ProfileView(DetailView):
@@ -22,9 +22,26 @@ class ProfileView(DetailView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context['page_obj'] = (
-            Post.objects.filter(author=self.object)
-            .order_by('-created_at'))
+        current_user = self.request.user
+
+        filters = {}
+        if current_user != self.object:
+            filters.update({
+                'is_published': True,
+                'pub_date__lte': timezone.now(),
+            })
+        page_obj = (Post.objects
+                    .filter(author=self.object, **filters)
+                    .order_by('-created_at'))
+        paginator = Paginator(page_obj, 10)
+        page_number = self.request.GET.get('page')
+        try:
+            page_obj = paginator.page(page_number)
+        except PageNotAnInteger:
+            page_obj = paginator.page(1)
+        except EmptyPage:
+            page_obj = paginator.page(paginator.num_pages)
+        context['page_obj'] = page_obj
         return context
 
 
@@ -37,12 +54,8 @@ class ProfileEditView(LoginRequiredMixin, UpdateView):
         return self.request.user
 
     def get_success_url(self):
-        return reverse_lazy('blog:profile',
-                            kwargs={'username': self.request.user.username})
-
-    def form_valid(self, form):
-        messages.success(self.request, "Профиль успешно обновлён!")
-        return super().form_valid(form)
+        return reverse('blog:profile',
+                       kwargs={'username': self.request.user.username})
 
 
 @login_required
@@ -140,8 +153,16 @@ def index(request):
     now = timezone.now()
     posts = Post.objects.filter(
         pub_date__lte=now, is_published=True, category__is_published=True
-    ).annotate(comment_count=Count('comments')).order_by("-pub_date")[:5]
-    context = {"page_obj": posts}
+    ).annotate(comment_count=Count('comments')).order_by("-pub_date")
+    paginator = Paginator(posts, 10)
+    page_number = request.GET.get('page')
+    try:
+        page_obj = paginator.page(page_number)
+    except PageNotAnInteger:
+        page_obj = paginator.page(1)
+    except EmptyPage:
+        page_obj = paginator.page(paginator.num_pages)
+    context = {'page_obj': page_obj}
     return render(request, "blog/index.html", context)
 
 
@@ -152,20 +173,32 @@ def category_posts(request, category_slug):
     posts = Post.objects.filter(
         category=category, is_published=True, pub_date__lte=now
     ).order_by("-pub_date")
-
-    context = {"category": category, "page_obj": posts}
+    paginator = Paginator(posts, 10)
+    page_number = request.GET.get('page')
+    try:
+        page_obj = paginator.page(page_number)
+    except PageNotAnInteger:
+        page_obj = paginator.page(1)
+    except EmptyPage:
+        page_obj = paginator.page(paginator.num_pages)
+    context = {"page_obj": page_obj, "category": category}
     return render(request, "blog/category.html", context)
 
 
 def post_detail(request, id):
     now = timezone.now()
-    post = get_object_or_404(
-        Post,
-        pk=id,
-        is_published=True,
-        pub_date__lte=now,
-        category__is_published=True
-    )
+    try:
+        post = Post.objects.get(
+            pk=id,
+            is_published=True,
+            pub_date__lte=now,
+            category__is_published=True
+        )
+    except Post.DoesNotExist:
+        if request.user == Post.objects.get(pk=id).author:
+            post = Post.objects.get(pk=id)
+        else:
+            return redirect('blog:index')
     comments = Comment.objects.filter(post=post)
     form = CommentForm()
     context = {
