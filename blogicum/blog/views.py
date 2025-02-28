@@ -10,6 +10,7 @@ from .forms import CommentForm, CommentUpdateForm, ProfileEditForm, PostForm
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.db.models import Count
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
+from django.http import Http404
 
 
 class ProfileView(DetailView):
@@ -32,7 +33,8 @@ class ProfileView(DetailView):
             })
         page_obj = (Post.objects
                     .filter(author=self.object, **filters)
-                    .order_by('-created_at'))
+                    .annotate(comment_count=Count('comments'))
+                    .order_by('-pub_date'))
         paginator = Paginator(page_obj, 10)
         page_number = self.request.GET.get('page')
         try:
@@ -81,7 +83,7 @@ def update_post(request, pk):
         form = PostForm(request.POST, request.FILES, instance=post)
         if form.is_valid():
             form.save()
-            return redirect("blog:post_detail", id=post.pk)
+            return redirect("blog:post_detail", pk=post.pk)
     else:
         form = PostForm(instance=post)
     return render(request, "blog/create.html",
@@ -98,7 +100,7 @@ def add_comment(request, post_pk):
             comment.post = post
             comment.author = request.user
             comment.save()
-            return redirect("blog:post_detail", id=post.pk)
+            return redirect("blog:post_detail", pk=post.pk)
     else:
         form = CommentForm()
     return render(request, "includes/comments.html",
@@ -109,7 +111,7 @@ def add_comment(request, post_pk):
 def delete_post(request, pk):
     post = get_object_or_404(Post, pk=pk)
     if request.user != post.author:
-        return redirect("blog:post_detail", id=post.pk)
+        return redirect("blog:post_detail", pk=post.pk)
     if request.method == "POST":
         post.delete()
         return redirect("blog:profile", username=request.user.username)
@@ -121,10 +123,10 @@ def delete_post(request, pk):
 def delete_comment(request, post_pk, comment_pk):
     comment = get_object_or_404(Comment, pk=comment_pk)
     if request.user != comment.author:
-        return redirect("blog:post_detail", id=post_pk)
+        return redirect("blog:post_detail", pk=post_pk)
     if request.method == "POST":
         comment.delete()
-        return redirect("blog:post_detail", id=post_pk)
+        return redirect("blog:post_detail", pk=post_pk)
     return render(request, "blog/comment.html",
                   {"comment": comment})
 
@@ -135,13 +137,13 @@ def update_comment(request, post_pk, comment_pk):
     comment = get_object_or_404(Comment, pk=comment_pk)
 
     if request.user != comment.author:
-        return redirect("blog:post_detail", id=post.pk)
+        return redirect("blog:post_detail", pk=post.pk)
 
     if request.method == "POST":
         form = CommentUpdateForm(request.POST, instance=comment)
         if form.is_valid():
             form.save()
-            return redirect("blog:post_detail", id=post.pk)
+            return redirect("blog:post_detail", pk=post.pk)
     else:
         form = CommentUpdateForm(instance=comment)
 
@@ -185,21 +187,26 @@ def category_posts(request, category_slug):
     return render(request, "blog/category.html", context)
 
 
-def post_detail(request, id):
+def post_detail(request, pk):
     now = timezone.now()
+
     try:
         post = Post.objects.get(
-            pk=id,
+            pk=pk,
             is_published=True,
             pub_date__lte=now,
             category__is_published=True
         )
     except Post.DoesNotExist:
-        if request.user == Post.objects.get(pk=id).author:
-            post = Post.objects.get(pk=id)
+        if request.user.is_authenticated:
+            try:
+                post = Post.objects.get(pk=pk, author=request.user)
+            except Post.DoesNotExist:
+                raise Http404("Пост не найден")
         else:
-            return redirect('blog:index')
-    comments = Comment.objects.filter(post=post)
+            raise Http404("Пост не найден")
+
+    comments = Comment.objects.filter(post=post).order_by('created_at')
     form = CommentForm()
     context = {
         "post": post,

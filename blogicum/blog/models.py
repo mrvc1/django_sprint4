@@ -95,10 +95,9 @@ class Comment(models.Model):
                                verbose_name="Автор комментария")
     text = models.TextField("Текст комментария")
     created_at = models.DateTimeField("Добавлен", auto_now_add=True)
-    updated_at = models.DateTimeField("Обновлён", auto_now=True)
 
     def __str__(self):
-        return f"{self.author.username}: {self.text[:30]}"
+        return self.text[:50]
 
     class Meta:
         ordering = ("-created_at",)
